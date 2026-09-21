@@ -1,0 +1,7 @@
+# Python environments and caches
+/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Private research notes
