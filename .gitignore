@@ -5,3 +5,4 @@ __pycache__/
 .pytest_cache/
 
 # Private research notes
+/docs/
