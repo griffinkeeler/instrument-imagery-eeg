@@ -4,5 +4,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
+# Experiment data
+/data/
+
 # Private research notes
 /docs/
