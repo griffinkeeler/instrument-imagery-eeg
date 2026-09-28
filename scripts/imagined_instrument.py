@@ -40,7 +40,7 @@ RANDOM_SEED = None                   # None generates and records a fresh seed.
 FALLBACK_REFRESH_HZ = 60.0
 LONG_FRAME_FACTOR = 1.5
 OUTPUT_DIRECTORY = Path(__file__).resolve().parent / "data"
-DURATIONS = dict(baseline=1.0, cue=0.75, preparation=1.25, imagery=4.0, rest=2.0)
+DURATIONS = dict(baseline=1.0, cue=0.75, preparation=1.25, imagery=8.0, rest=2.0)
 CODES = {0: "IDLE_RESET", 1: "SESSION_START", 2: "BLOCK_START",
          3: "BASELINE_ONSET", 11: "PIANO_CUE_ONSET", 12: "GUITAR_CUE_ONSET",
          20: "PREPARATION_ONSET", 21: "PIANO_IMAGERY_ONSET",
