@@ -6,7 +6,7 @@ import types
 import unittest
 from pathlib import Path
 
-spec = importlib.util.spec_from_file_location('experiment', Path(__file__).resolve().parents[1] / 'imagined_instrument.py')
+spec = importlib.util.spec_from_file_location('experiment', Path(__file__).resolve().parents[1] / 'scripts' / 'imagined_instrument.py')
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
