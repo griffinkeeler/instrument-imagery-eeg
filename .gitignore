@@ -9,3 +9,6 @@ __pycache__/
 
 # Private research notes
 /docs/
+
+# Local EEG analysis outputs
+/results/
