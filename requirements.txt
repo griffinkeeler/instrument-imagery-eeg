@@ -1,0 +1,7 @@
+# Versions used to validate this offline analysis pipeline.
+bioread==2025.5.2
+numpy==2.4.6
+scipy==1.17.1
+mne==1.13.2
+scikit-learn==1.9.1
+matplotlib==3.11.2
