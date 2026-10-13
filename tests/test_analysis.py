@@ -1,5 +1,9 @@
 """Synthetic checks for trigger decoding, alignment, isolation, and CV."""
 import unittest
+import csv
+import json
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import mne
@@ -7,7 +11,7 @@ from mne.decoding import CSP
 import numpy as np
 from sklearn.model_selection import StratifiedKFold, permutation_test_score
 
-from scripts.run_lda import build_epochs, decode_triggers, evaluate, make_pipeline
+from scripts.run_lda import build_epochs, decode_triggers, evaluate, make_pipeline, main, parse_args
 
 
 class AnalysisTests(unittest.TestCase):
@@ -27,6 +31,13 @@ class AnalysisTests(unittest.TestCase):
         eog = rng.normal(scale=1e-5, size=5000)
         events = [(100, 1, 10), (300, 4, 10), (1500, 2, 10), (1700, 8, 10)]
         return eeg, eog, events
+
+    def test_initial_active_trigger_is_not_an_observed_onset(self):
+        codes = np.array([4, 4, 4, 1, 1, 0, 4, 4, 0])
+        digital = np.stack([(codes & bit != 0) * 5. for bit in (1, 2, 4, 8)])
+        reconstructed, events = decode_triggers(digital)
+        np.testing.assert_array_equal(reconstructed, codes)
+        self.assertEqual(events, [(3, 1, 2), (6, 4, 2)])
 
     def test_alignment_practice_and_filter_isolation(self):
         eeg, eog, events = self.recording()
@@ -120,6 +131,62 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(len(predictions), 40)
         self.assertTrue(np.all(folds > 0))
         self.assertFalse(hasattr(model.named_steps["csp"], "filters_"))
+
+    def test_cross_session_fits_only_training_recording_and_saves_test_predictions(self):
+        rng = np.random.default_rng(24)
+        training = rng.normal(size=(20, 9, 200))
+        testing = rng.normal(size=(6, 9, 200))
+        train_y, test_y = np.tile([0, 1], 10), np.tile([0, 1], 3)
+        for X, y in ((training, train_y), (testing, test_y)):
+            X[y == 0, 0] *= 5
+            X[y == 1, 1] *= 5
+        loads, fits = [], []
+        original_fit = CSP.fit
+
+        def loader(args):
+            loads.append((args.input.name, args.exclude_first, args.exclude_trials))
+            X, y = (training, train_y) if args.input.name == "train.acq" else (testing, test_y)
+            rows = [dict(trial=i + 1, included=True, reason="", epoch_index=i) for i in range(len(y))]
+            return X, y, rows, 100., [(0, 1, 1), (100, 4, 1)], []
+
+        def fit(csp, X, y, **kwargs):
+            np.testing.assert_array_equal(X, training)
+            np.testing.assert_array_equal(y, train_y)
+            fits.append(len(X))
+            return original_fit(csp, X, y, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            train, test = root / "train.acq", root / "test.acq"
+            train.touch()
+            test.touch()
+            with patch("scripts.run_lda.load_recording_epochs", side_effect=loader), patch.object(CSP, "fit", fit):
+                report = main(["--cross-session", str(train), str(test), "--output", str(root),
+                               "--test-exclude-first", "0", "--test-exclude-trials"])
+            self.assertEqual(fits, [20])
+            self.assertEqual(loads, [("train.acq", 4, []), ("test.acq", 0, [])])
+            self.assertGreater(report["cross_session"]["balanced_accuracy"], .9)
+            saved = json.loads((root / "summary.json").read_text())
+            self.assertEqual(saved["cross_session"]["n_test"], 6)
+            with (root / "predictions.csv").open() as f:
+                predictions = list(csv.DictReader(f))
+            self.assertEqual(len(predictions), 6)
+            self.assertTrue(all(row["session"] == "test" for row in predictions))
+            with self.assertRaisesRegex(ValueError, "must be different"):
+                main(["--cross-session", str(train), str(train)])
+            with self.assertRaisesRegex(ValueError, "single-recording CV"):
+                main(["--cross-session", str(train), str(test), "--permutations", "1"])
+            with patch("scripts.run_lda.load_recording_epochs", side_effect=[
+                (training, train_y, [], 100., [], []), (testing, test_y, [], 200., [], [])
+            ]):
+                with self.assertRaisesRegex(ValueError, "matching sample rates"):
+                    main(["--cross-session", str(train), str(test)])
+
+    def test_cross_session_requires_exactly_two_files(self):
+        with self.assertRaises(SystemExit):
+            parse_args(["--cross-session", "train.acq"])
+        with self.assertRaises(SystemExit):
+            parse_args(["--input", "one.acq", "--cross-session", "train.acq", "test.acq"])
 
 
 if __name__ == "__main__":
