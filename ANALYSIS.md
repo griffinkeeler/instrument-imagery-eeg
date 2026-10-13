@@ -19,6 +19,9 @@ script does not run on import. Dependencies are in `requirements-analysis.txt`.
   Each nonzero run is one event. Codes 1/2 are piano/guitar cues; 4/8 are
   piano/guitar imagery onsets. Labels come directly from 4/8 and the preceding
   cue is checked for agreement.
+  A nonzero trigger already active at the start of acquisition is ignored:
+  its onset was not observed. This initial run does not count toward trial
+  numbering or practice exclusions; later cue/imagery checks still apply.
 - The first four imagery trials are practice and are excluded by default,
   as confirmed for this recording. This leaves 40 trials per class. Use
   `--exclude-first 0` only for a recording without initial practice trials.
@@ -83,6 +86,40 @@ Incomplete trials, segment-crossing trials, windows with nonfinite samples,
 flat EEG channels, and trials interrupted by another event before the nominal
 imagery end are excluded and logged. There are no imagery-offset triggers, so
 10-second duration is supplied by the protocol, not independently verified.
+
+## Train and test on separate recordings
+
+```sh
+/opt/anaconda3/envs/instrument-imagery/bin/python scripts/run_lda.py \
+  --cross-session data/train_recording.acq data/test_recording.acq \
+  --test-exclude-first 0 \
+  --output results/cross_session
+```
+
+The first file supplies all retained training trials; the second supplies all
+retained test trials. CSP and LDA are fitted once, using only the training file.
+Both recordings must contain usable piano and guitar trials, and have matching
+sample rates and epoch dimensions. The normal channel mapping checks apply to
+each file. Use distinct recording files and keep test results out of decisions
+about components, filtering, and time windows.
+
+Filtering, analysis windows, artifact thresholds, and trial exclusions apply to
+both recordings. By default, the first four trials in **each** are excluded.
+Use `--test-exclude-first 0` if the test recording has no practice trials.
+`--test-exclude-trials 7 12` overrides the test recording's explicit exclusions;
+pass `--test-exclude-trials` with no numbers to clear them for testing.
+
+This mode skips both cross-validation evaluations, so `--folds` and
+`--chronological-folds` do not control its training/test sizes. `--input` cannot
+be combined with `--cross-session`, and nonzero `--permutations` is currently
+supported only for single-recording cross-validation.
+
+The same four output filenames are written. `summary.json` contains separate
+recording metadata and a `cross_session` section with test accuracy, balanced
+accuracy, per-class recall, and confusion matrix. `trials.csv` and `events.csv`
+identify the session and source file; `predictions.csv` contains only test trials
+and has no fold assignments. Choose a separate output directory to preserve prior
+runs.
 
 ## Outputs and options
 

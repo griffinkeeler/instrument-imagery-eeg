@@ -29,7 +29,11 @@ EEG_NAMES = ["F3", "F4", "C3", "C4", "P3", "P4", "Cz", "Fz", "Pz"]
 
 
 def decode_triggers(digital, threshold=2.5):
-    """Rows are D0..D3; return one code per sample and nonzero run onsets."""
+    """Rows are D0..D3; return codes and observed nonzero run onsets.
+
+    A nonzero run already active at sample zero has no observed onset and is
+    omitted. It may be a latched trigger or a pulse from before acquisition.
+    """
     digital = np.asarray(digital)
     if digital.ndim != 2 or digital.shape[0] != 4 or not digital.shape[1]:
         raise ValueError("Expected four nonempty digital channels (D0..D3).")
@@ -39,7 +43,7 @@ def decode_triggers(digital, threshold=2.5):
     starts = np.flatnonzero(np.r_[True, codes[1:] != codes[:-1]])
     stops = np.r_[starts[1:], len(codes)]
     events = [(int(s), int(codes[s]), int(e - s))
-              for s, e in zip(starts, stops) if codes[s] != 0]
+              for s, e in zip(starts, stops) if s > 0 and codes[s] != 0]
     return codes, events
 
 
@@ -173,7 +177,10 @@ def write_csv(path, rows):
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--input", type=Path, default=ROOT / "data/Instrument_10_6_26.acq")
+    inputs = p.add_mutually_exclusive_group()
+    inputs.add_argument("--input", type=Path, default=ROOT / "data/Instrument_10_6_26.acq")
+    inputs.add_argument("--cross-session", type=Path, nargs=2, metavar=("TRAIN_FILE", "TEST_FILE"),
+                        help="Fit CSP+LDA on TRAIN_FILE and evaluate only on TEST_FILE; skips CV")
     p.add_argument("--output", type=Path, default=ROOT / "results/csp_lda")
     p.add_argument("--tmin", type=float, default=2.)
     p.add_argument("--tmax", type=float, default=8., help="Exclusive end, seconds after imagery onset")
@@ -191,6 +198,10 @@ def parse_args(argv=None):
                    help="Number of initial imagery trials to exclude as practice")
     p.add_argument("--exclude-trials", type=int, nargs="*", default=[],
                    help="Additional one-based imagery trial numbers to exclude")
+    p.add_argument("--test-exclude-first", type=int, default=None,
+                   help="Cross-session test practice exclusions; defaults to --exclude-first")
+    p.add_argument("--test-exclude-trials", type=int, nargs="*", default=None,
+                   help="Cross-session test trial exclusions; defaults to --exclude-trials")
     p.add_argument("--reject-eeg-uv", type=float, default=None)
     p.add_argument("--reject-eog-uv", type=float, default=None)
     return p.parse_args(argv)
@@ -228,9 +239,77 @@ def load_recording_epochs(args):
     return X, y, rows, fs, events, markers
 
 
+def run_cross_session(args):
+    """Fit once on the training recording; never fit on test trials."""
+    train_path, test_path = args.cross_session
+    if train_path.resolve() == test_path.resolve() or train_path.samefile(test_path):
+        raise ValueError("Cross-session training and test files must be different.")
+    if args.permutations:
+        raise ValueError("--permutations is supported only in single-recording CV mode.")
+    recordings = {}
+    trial_rows, event_rows = [], []
+    for session, path in (("train", train_path), ("test", test_path)):
+        session_args = argparse.Namespace(**vars(args))
+        session_args.input = path
+        if session == "test":
+            if args.test_exclude_first is not None:
+                session_args.exclude_first = args.test_exclude_first
+            if args.test_exclude_trials is not None:
+                session_args.exclude_trials = args.test_exclude_trials
+        X, y, rows, fs, events, markers = load_recording_epochs(session_args)
+        if len(np.unique(y)) != 2:
+            raise ValueError(f"The {session} recording must contain both usable classes.")
+        recordings[session] = (X, y, rows, fs, events, markers)
+        trial_rows.extend(dict(session=session, input=str(path.resolve()), **r) for r in rows)
+        event_rows.extend(dict(session=session, input=str(path.resolve()), sample=s,
+                               seconds=s / fs, code=c, name=TRIGGER_NAMES[c], pulse_seconds=w / fs)
+                          for s, c, w in events)
+    X_train, y_train, _, train_fs, _, _ = recordings["train"]
+    X_test, y_test, test_rows, test_fs, _, _ = recordings["test"]
+    if train_fs != test_fs or X_train.shape[1:] != X_test.shape[1:]:
+        raise ValueError("Recordings must have matching sample rates and epoch dimensions.")
+    model = make_pipeline(args.components)
+    model.fit(X_train, y_train)
+    pred = model.predict(X_test)
+    recalls = recall_score(y_test, pred, labels=[0, 1], average=None)
+    metrics = dict(n_train=len(y_train), n_test=len(y_test),
+                   accuracy=float(accuracy_score(y_test, pred)),
+                   balanced_accuracy=float(balanced_accuracy_score(y_test, pred)),
+                   per_class_recall=dict(piano=float(recalls[0]), guitar=float(recalls[1])),
+                   confusion_matrix=confusion_matrix(y_test, pred, labels=[0, 1]).tolist())
+    report = dict(mode="cross_session", settings=vars(args), channels=EEG_NAMES,
+                  labels={0: "piano", 1: "guitar"}, cross_session=metrics, recordings={},
+                  versions={p: version(p) for p in ("numpy", "scipy", "mne", "scikit-learn", "bioread")})
+    for session, (X, y, rows, fs, events, markers) in recordings.items():
+        path = train_path if session == "train" else test_path
+        report["recordings"][session] = dict(input=str(path.resolve()), sample_rate=fs,
+            epoch_shape=list(X.shape), markers=markers,
+            trigger_counts=dict(Counter(c for _, c, _ in events)),
+            included_counts=dict(piano=int(sum(y == 0)), guitar=int(sum(y == 1))),
+            excluded_counts=dict(Counter(r["reason"] for r in rows if not r["included"])))
+    predictions = [dict(session="test", input=str(test_path.resolve()), trial=r["trial"],
+                        true_label=int(y_test[i]), predicted_label=int(pred[i]))
+                   for i, r in enumerate(r for r in test_rows if r["included"])]
+    args.output.mkdir(parents=True, exist_ok=True)
+    write_csv(args.output / "trials.csv", trial_rows)
+    write_csv(args.output / "events.csv", event_rows)
+    write_csv(args.output / "predictions.csv", predictions)
+    (args.output / "summary.json").write_text(json.dumps(report, indent=2, default=str) + "\n")
+    print(f"Training trials: {len(y_train)}; test trials: {len(y_test)}", flush=True)
+    print(f"Cross-session balanced accuracy: {metrics['balanced_accuracy']:.3f}", flush=True)
+    print(f"Saved summary, events, trial QC, and test predictions to {args.output}")
+    return report
+
+
 def main(argv=None):
     args = parse_args(argv)
     mne.set_log_level("ERROR")
+    if not 1 <= args.components <= 9 or args.permutations < 0:
+        raise ValueError("Require 1..9 components and >=0 permutations.")
+    if args.cross_session:
+        return run_cross_session(args)
+    if args.test_exclude_first is not None or args.test_exclude_trials is not None:
+        raise ValueError("Test exclusion options require --cross-session.")
     if not 1 <= args.components <= 9 or args.folds < 2 or args.permutations < 0:
         raise ValueError("Require 1..9 components, >=2 folds, and >=0 permutations.")
     if args.chronological_folds not in (0,) and args.chronological_folds < 2:
