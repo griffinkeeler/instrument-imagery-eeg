@@ -1,0 +1,54 @@
+run_name: cross-session-reject-eog
+output_dir: results/cross-session-reject-eog
+
+data:
+  mode: cross_session  # within_session or cross_session
+
+  within_session:
+    file: data/Instrument_10_6_26.acq
+    exclude_first: 4
+    exclude_trials: []
+
+  cross_session:
+    train:
+      file: data/Instrument_10_6_26.acq
+      exclude_first: 4
+      exclude_trials: []
+
+    test:
+      file: data/Instrument_10_13_26.acq
+      exclude_first: 4
+      exclude_trials: []
+
+preprocessing:
+  epoch:
+    tmin_seconds: 2.0
+    tmax_seconds: 8.0  # Exclusive end
+    duration_seconds: 10.0
+
+  filter:
+    high_pass_hz: 8.0
+    low_pass_hz: 30.0
+
+  rejection:
+    eeg_ptp_uv: null  # null disables rejection
+    eog_ptp_uv: 100.0 # Exploratory threshold; null disables rejection
+
+model:
+  csp:
+    n_components: 4
+    reg: ledoit_wolf
+
+  lda:
+    solver: lsqr
+    shrinkage: auto
+
+evaluation:
+  seed: 42
+
+  within_session:
+    folds: 5
+    chronological_folds: 4  # 0 disables; unused in cross-session mode
+
+  permutation_test:
+    n_permutations: 1000  # 0 disables
