@@ -1,4 +1,4 @@
-# Classification of Imagined Instrument from EEG 
+# Decoding Imagined Instrument Playing from EEG
 The goal of this project is to test whether EEG can identify what musical instrument a person imagines themselves
 playing above chance.
 
